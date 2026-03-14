@@ -1183,158 +1183,215 @@ class RandomBaselineStrategy(Strategy):
 
 
 class WhaleMirrorStrategy(Strategy):
-    """Strategy 10: Copy-trade the whale (@432614799197 / 0x88f46b...)."""
+    """Strategy 10: Copy-trade 4 profitable Polymarket whales.
 
-    WHALE_ADDRESS = "0x88f46b9e5d86b4fb85be55ab0ec4004264b9d4db"
-    POLYMARKET_DATA_API = "https://data-api.polymarket.com"
+    Tracks whale wallets via Polymarket Data API, mirrors their 5-min
+    crypto market trades (BTC/ETH Up/Down) in real-time.
+
+    Whales:
+        MuseumOfBees  — $171K P&L, crypto scalper ($31.7M vol)
+        tugao9        — $18.9K P&L, crypto scalper ($937K vol)
+        Realistic-Swivel — $125K P&L, micro-scalper ($31M vol)
+        2B9S          — $100K P&L, diversified ($12M vol)
+    """
+
+    DATA_API = "https://data-api.polymarket.com"
+
+    WHALES = {
+        "0x61276aba49117fd9299707d5d573652949d5c977": "MuseumOfBees",
+        "0x970e744a34cd0795ff7b4ba844018f17b7fd5c26": "tugao9",
+        "0x2eb5714ff6f20f5f9f7662c556dbef5e1c9bf4d4": "Realistic-Swivel",
+        "0x87650b9f63563f7c456d9bbcceee5f9faf06ed81": "2B9S",
+        "0xb2a3623364c33561d8312e1edb79eb941c798510": "aekghas",
+        "0x96489abcb9f583d6835c8ef95ffc923d05a86825": "anoin123",
+        "0x1cc16713196d456f86fa9c7387dd326a7f73b8df": "Wickier",
+        "0x7744bfd749a70020d16a1fcbac1d064761c9999e": "chungguskhan",
+        "0xde7be6d489bce070a959e0cb813128ae659b5f4b": "wan123",
+    }
 
     def __init__(self):
-        super().__init__("whale", "WhaleMirror", "general")
-        self.bet_size = 2.0
-        self.max_positions = 3
-        self._tracked = {}
-        self._known_positions = set()  # Track whale positions we already know about
+        super().__init__("whale", "WhaleMirror", "crypto")
+        self.bet_size = 5.0
+        self.max_positions = 1  # 1 at a time like other crypto strategies
         self._last_scan = 0
-        self._scan_interval = 300  # 5 minutes
+        self._scan_interval = 30  # Poll whales every 30 seconds
+        self._last_seen_trades = {}  # {whale_addr: set of tx hashes}
+        self._current_window_side = None  # The side whales are voting for
+        self._whale_votes = {}  # {whale_name: side} for current window
+        self._current_slug = None
 
-    def on_crypto_tick(self, *args):
-        pass
+    def on_crypto_tick(self, crypto_price, market, price_history, time_remaining):
+        if self.balance < self.bet_size or self.ko:
+            return
+
+        slug = market.get("slug", "")
+
+        # New window — reset whale votes
+        if slug != self._current_slug:
+            self._current_slug = slug
+            self._whale_votes = {}
+            self._current_window_side = None
+
+        # Don't enter in last 15 seconds (too late for fills)
+        if time_remaining < 15:
+            return
+
+        # Don't enter in first 30 seconds (let whales show their hand)
+        if time_remaining > 270:
+            return
+
+        # Poll whale trades periodically
+        now = time.time()
+        if now - self._last_scan >= self._scan_interval:
+            self._last_scan = now
+            self._poll_whale_trades(slug)
+
+        # If we already have a position, check exits
+        if self.position:
+            self._check_exit(market)
+            return
+
+        # Need at least 2 whale votes on the same side to enter
+        if not self._whale_votes:
+            return
+
+        # Count votes
+        up_votes = sum(1 for s in self._whale_votes.values() if s == "UP")
+        down_votes = sum(1 for s in self._whale_votes.values() if s == "DOWN")
+
+        consensus_side = None
+        if up_votes >= 2:
+            consensus_side = "UP"
+        elif down_votes >= 2:
+            consensus_side = "DOWN"
+
+        if not consensus_side:
+            return
+
+        # Don't re-enter the same side we already voted on
+        if consensus_side == self._current_window_side:
+            return
+        self._current_window_side = consensus_side
+
+        price = market.get(f"{consensus_side.lower()}_price", 0.50)
+        voters = [name for name, side in self._whale_votes.items() if side == consensus_side]
+        self.log(f"Whale consensus: {consensus_side} ({', '.join(voters)})")
+
+        self.enter(
+            consensus_side, price, self.bet_size,
+            market.get("market_id", slug), market.get("title", slug),
+            slug=slug,
+            window_end=market.get("end_time", 0),
+            extra={"whale_votes": f"{up_votes}U/{down_votes}D", "edge": 0},
+            market=market,
+        )
+
+    def _poll_whale_trades(self, current_slug):
+        """Fetch recent trades from all 4 whales, look for current-window entries."""
+        for addr, name in self.WHALES.items():
+            try:
+                resp = requests.get(
+                    f"{self.DATA_API}/activity",
+                    params={"user": addr, "limit": 10},
+                    timeout=5,
+                )
+                if resp.status_code != 200:
+                    continue
+
+                activities = resp.json()
+                if not isinstance(activities, list):
+                    continue
+
+                # Initialize seen set for this whale
+                if addr not in self._last_seen_trades:
+                    self._last_seen_trades[addr] = set()
+
+                for trade in activities:
+                    if trade.get("type") != "TRADE":
+                        continue
+                    if trade.get("side") != "BUY":
+                        continue
+
+                    tx_hash = trade.get("transactionHash", "")
+                    if tx_hash in self._last_seen_trades[addr]:
+                        continue
+                    self._last_seen_trades[addr].add(tx_hash)
+
+                    # Check if this trade is on a crypto up/down market
+                    title = (trade.get("title") or "").lower()
+                    outcome = (trade.get("outcome") or "").lower()
+
+                    is_crypto_updown = ("up or down" in title and
+                                        any(c in title for c in ["bitcoin", "ethereum", "btc", "eth", "solana", "xrp"]))
+
+                    if not is_crypto_updown:
+                        continue
+
+                    # Determine side from outcome
+                    if "up" in outcome:
+                        side = "UP"
+                    elif "down" in outcome:
+                        side = "DOWN"
+                    else:
+                        continue
+
+                    # Check if trade is recent (within last 5 minutes)
+                    trade_ts = trade.get("timestamp", 0)
+                    if isinstance(trade_ts, str):
+                        try:
+                            trade_ts = int(trade_ts)
+                        except ValueError:
+                            continue
+                    age = time.time() - trade_ts
+                    if age > 300:  # Older than 5 min, skip
+                        continue
+
+                    # Record whale's vote
+                    size = float(trade.get("usdcSize") or trade.get("size", 0))
+                    self._whale_votes[name] = side
+                    self.log(f"Whale {name}: {side} ${size:.2f}")
+
+                # Trim seen set to prevent memory growth
+                if len(self._last_seen_trades[addr]) > 200:
+                    self._last_seen_trades[addr] = set(list(self._last_seen_trades[addr])[-100:])
+
+            except Exception:
+                continue
+
+    def _check_exit(self, market):
+        """Standard profit target / stop loss exits."""
+        pos = self.position
+        if not pos:
+            return
+
+        current_price = market.get(f"{pos.side.lower()}_bid", market.get(f"{pos.side.lower()}_price", 0.50))
+        pnl_pct = pos.pnl_pct(current_price)
+
+        if pnl_pct >= SCALP_PROFIT_TARGET:
+            sell_value = pos.shares * current_price
+            pnl = sell_value - pos.cost
+            fee = pnl * SCALP_PAPER_FEE if pnl > 0 else 0
+            self.exit_trade(current_price, "profit_target", pnl - fee, pos.side, True)
+        elif pnl_pct <= -SCALP_STOP_LOSS:
+            sell_value = pos.shares * current_price
+            pnl = sell_value - pos.cost
+            self.exit_trade(current_price, "stop_loss", pnl, pos.side, False)
 
     def on_market_resolve(self, winner):
-        pass
+        """Resolution from BTC price comparison (same as other crypto strategies)."""
+        if not self.position:
+            return
+        pos = self.position
+        we_won = (winner and pos.side.lower() == winner.lower())
+        if we_won:
+            winnings = pos.shares * 1.0 - pos.cost
+            fee = winnings * SCALP_PAPER_FEE if winnings > 0 else 0
+            self.exit_trade(1.0, "resolution", winnings - fee, winner, True)
+        else:
+            self.exit_trade(0.0, "resolution", -pos.cost, winner or "unknown", False)
 
     def on_general_tick(self, all_markets):
-        now = time.time()
-        if now - self._last_scan < self._scan_interval:
-            return
-        self._last_scan = now
-
-        self._check_resolutions(all_markets)
-
-        if len(self._tracked) >= self.max_positions or self.balance < self.bet_size:
-            return
-
-        # Fetch whale's recent activity
-        whale_positions = self._fetch_whale_positions()
-        if not whale_positions:
-            return
-
-        for pos_data in whale_positions[:3]:
-            market_id = pos_data.get("market_id", "")
-            if market_id in self._tracked or market_id in self._known_positions:
-                continue
-
-            self._known_positions.add(market_id)
-
-            title = pos_data.get("title", "Unknown")
-            side = pos_data.get("side", "YES")
-            price = pos_data.get("price", 0.50)
-
-            if price <= 0 or price >= 1.0:
-                continue
-            if len(self._tracked) >= self.max_positions:
-                break
-
-            self._tracked[market_id] = {
-                "entry_price": price,
-                "title": title,
-                "side": side,
-                "entry_time": now,
-            }
-            self.enter(
-                side, price, self.bet_size,
-                market_id, title,
-                extra={"whale": self.WHALE_ADDRESS[:10], "edge": 0},
-            )
-            if self.position:
-                self._tracked[market_id]["position"] = self.position
-                self.position = None
-            self.log(f"Whale mirror: {title[:50]} {side} @ {price*100:.1f}c")
-
-    def _fetch_whale_positions(self):
-        """Fetch whale's current positions from Polymarket data API."""
-        try:
-            # Try the Gamma API profile endpoint
-            resp = requests.get(
-                f"{GAMMA_API}/profiles/{self.WHALE_ADDRESS}",
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                positions = []
-                for p in data.get("positions", data.get("markets", []))[:5]:
-                    positions.append({
-                        "market_id": p.get("market", {}).get("id", p.get("conditionId", "")),
-                        "title": p.get("market", {}).get("question", p.get("title", "")),
-                        "side": "YES" if float(p.get("size", 0)) > 0 else "NO",
-                        "price": abs(float(p.get("avgPrice", p.get("currentPrice", 0.50)))),
-                    })
-                return positions
-        except Exception:
-            pass
-
-        # Fallback: try activity endpoint
-        try:
-            resp = requests.get(
-                f"{self.POLYMARKET_DATA_API}/activity",
-                params={"wallet": self.WHALE_ADDRESS, "limit": 10},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                activities = resp.json()
-                positions = []
-                for a in activities:
-                    if a.get("type") in ("buy", "trade"):
-                        positions.append({
-                            "market_id": a.get("conditionId", a.get("market_id", "")),
-                            "title": a.get("title", a.get("question", "")),
-                            "side": a.get("side", "YES"),
-                            "price": float(a.get("price", 0.50)),
-                        })
-                return positions
-        except Exception:
-            pass
-
-        return []
-
-    def _check_resolutions(self, all_markets):
-        market_map = {m.get("id"): m for m in all_markets}
-        resolved = []
-        for mid, data in self._tracked.items():
-            m = market_map.get(mid)
-            pos = data.get("position")
-            side = data.get("side", "YES")
-
-            if not m:
-                if pos:
-                    self.position = pos
-                    self.exit_trade(0.0, "resolution", -pos.cost, "unknown", False)
-                resolved.append(mid)
-                continue
-
-            closed = m.get("closed", False)
-            prices = m.get("outcomePrices", [])
-            if closed and prices and len(prices) >= 2:
-                try:
-                    yes_p = float(prices[0])
-                    if pos:
-                        self.position = pos
-                        won = (side == "YES" and yes_p > 0.90) or (side == "NO" and yes_p < 0.10)
-                        if won:
-                            winnings = pos.shares * 1.0 - pos.cost
-                            fee = winnings * SCALP_PAPER_FEE if winnings > 0 else 0
-                            self.exit_trade(1.0, "resolution", winnings - fee, side, True)
-                        else:
-                            self.exit_trade(0.0, "resolution", -pos.cost, "opposite", False)
-                    resolved.append(mid)
-                except (ValueError, TypeError):
-                    pass
-
-            if time.time() - data["entry_time"] > 30 * 86400:
-                resolved.append(mid)
-
-        for mid in resolved:
-            self._tracked.pop(mid, None)
+        pass
 
 
 # =====================
@@ -1342,7 +1399,7 @@ class WhaleMirrorStrategy(Strategy):
 # =====================
 
 class ArenaRunner:
-    """Runs all 9 strategies in parallel."""
+    """Runs all 10 strategies in parallel."""
 
     def __init__(self, coin="btc"):
         self.coin = coin.lower()
@@ -1356,6 +1413,7 @@ class ArenaRunner:
             HighProbStrategy(),
             LongshotSniperStrategy(),
             RandomBaselineStrategy(),
+            WhaleMirrorStrategy(),
         ]
         self._crypto_prices = []
         self._last_crypto = None

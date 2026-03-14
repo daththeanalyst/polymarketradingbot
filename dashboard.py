@@ -833,8 +833,8 @@ with h3:
 # ---------------------
 # TABS
 # ---------------------
-tab_arena, tab2, tab6, tab1, tab3, tab4, tab5, tab_info = st.tabs([
-    "Arena", "Scalper", "Trending Bets", "Overview", "Settings", "Simulation", "History", "Info"
+tab_arena, tab_whales, tab2, tab6, tab1, tab3, tab4, tab5, tab_info = st.tabs([
+    "Arena", "Whale Tracker", "Scalper", "Trending Bets", "Overview", "Settings", "Simulation", "History", "Info"
 ])
 
 
@@ -1473,6 +1473,281 @@ with tab1:
                     ok, out, err = run_bot(flag)
                 st.session_state["last_output"] = out if ok else err
                 st.rerun()
+
+
+# =============================================
+# TAB: WHALE TRACKER
+# =============================================
+
+WHALE_REGISTRY = {
+    "0x61276aba49117fd9299707d5d573652949d5c977": {
+        "name": "MuseumOfBees", "pnl": "+$171K", "volume": "$31.7M",
+        "style": "Crypto Scalper", "color": "#00ff88",
+    },
+    "0x970e744a34cd0795ff7b4ba844018f17b7fd5c26": {
+        "name": "tugao9", "pnl": "+$18.9K", "volume": "$937K",
+        "style": "Crypto Scalper", "color": "#00d4ff",
+    },
+    "0x2eb5714ff6f20f5f9f7662c556dbef5e1c9bf4d4": {
+        "name": "Realistic-Swivel", "pnl": "+$125K", "volume": "$31M",
+        "style": "Micro-Scalper", "color": "#a855f7",
+    },
+    "0x87650b9f63563f7c456d9bbcceee5f9faf06ed81": {
+        "name": "2B9S", "pnl": "+$100K", "volume": "$12M",
+        "style": "Sports/Weather/Longshots", "color": "#fbbf24",
+    },
+    "0xb2a3623364c33561d8312e1edb79eb941c798510": {
+        "name": "aekghas", "pnl": "+$54K", "volume": "$704K",
+        "style": "War/Geopolitical", "color": "#ff3366",
+    },
+    "0x96489abcb9f583d6835c8ef95ffc923d05a86825": {
+        "name": "anoin123", "pnl": "-$4.87M", "volume": "$53.3M",
+        "style": "Everything (Degen)", "color": "#ff6b35",
+    },
+    "0x1cc16713196d456f86fa9c7387dd326a7f73b8df": {
+        "name": "Wickier", "pnl": "+$220K", "volume": "$12.6M",
+        "style": "Diversified", "color": "#06d6a0",
+    },
+    "0x7744bfd749a70020d16a1fcbac1d064761c9999e": {
+        "name": "chungguskhan", "pnl": "+$750K", "volume": "$63.8M",
+        "style": "Geopolitical/Crypto", "color": "#e040fb",
+    },
+    "0xde7be6d489bce070a959e0cb813128ae659b5f4b": {
+        "name": "wan123", "pnl": "+$360K", "volume": "$10.4M",
+        "style": "Diversified Whale", "color": "#00bcd4",
+    },
+}
+
+WHALE_DATA_API = "https://data-api.polymarket.com"
+
+
+@st.cache_data(ttl=30)
+def fetch_whale_activity(address, limit=20):
+    """Fetch recent activity for a whale wallet."""
+    try:
+        resp = requests.get(
+            f"{WHALE_DATA_API}/activity",
+            params={"user": address, "limit": limit},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+@st.cache_data(ttl=60)
+def fetch_whale_positions(address, limit=20):
+    """Fetch current positions for a whale wallet."""
+    try:
+        resp = requests.get(
+            f"{WHALE_DATA_API}/positions",
+            params={"user": address, "limit": limit},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+with tab_whales:
+    st.markdown(
+        '<div style="font-family:Inter,sans-serif;font-weight:900;font-size:1.8rem;'
+        'background:linear-gradient(135deg,#00ff88,#00d4ff,#a855f7);-webkit-background-clip:text;'
+        '-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:4px;">'
+        'WHALE TRACKER</div>'
+        '<div style="font-family:Inter,sans-serif;font-size:0.85rem;color:#94a3b8;margin-bottom:20px;">'
+        'Live tracking of 9 profitable Polymarket whales. See their trades, positions, and strategies in real-time.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Whale selector
+    whale_options = {f"{info['name']} ({info['pnl']})": addr for addr, info in WHALE_REGISTRY.items()}
+    selected_label = st.selectbox(
+        "Select Whale",
+        list(whale_options.keys()),
+        key="whale_select",
+    )
+    selected_addr = whale_options[selected_label]
+    whale_info = WHALE_REGISTRY[selected_addr]
+
+    # Whale profile card
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#12121a,#1a1a2e);border:1px solid {whale_info["color"]}40;'
+        f'border-radius:16px;padding:20px 24px;margin:12px 0 20px 0;">'
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">'
+        f'<div style="width:40px;height:40px;border-radius:50%;background:{whale_info["color"]};display:flex;'
+        f'align-items:center;justify-content:center;font-weight:900;font-size:1.1rem;color:#0a0a0f;">'
+        f'{whale_info["name"][0].upper()}</div>'
+        f'<div>'
+        f'<div style="font-family:Inter,sans-serif;font-weight:800;font-size:1.2rem;color:#e2e8f0;">'
+        f'{whale_info["name"]}</div>'
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:0.7rem;color:#64748b;">'
+        f'{selected_addr}</div>'
+        f'</div></div>'
+        f'<div style="display:flex;gap:24px;flex-wrap:wrap;">'
+        f'<div><span style="font-family:Inter,sans-serif;font-size:0.7rem;color:#64748b;">ALL-TIME P&L</span><br>'
+        f'<span style="font-family:JetBrains Mono,monospace;font-weight:700;font-size:1.1rem;'
+        f'color:{"#00ff88" if not whale_info["pnl"].startswith("-") else "#ff3366"};">{whale_info["pnl"]}</span></div>'
+        f'<div><span style="font-family:Inter,sans-serif;font-size:0.7rem;color:#64748b;">VOLUME</span><br>'
+        f'<span style="font-family:JetBrains Mono,monospace;font-weight:700;font-size:1.1rem;color:#e2e8f0;">'
+        f'{whale_info["volume"]}</span></div>'
+        f'<div><span style="font-family:Inter,sans-serif;font-size:0.7rem;color:#64748b;">STYLE</span><br>'
+        f'<span style="font-family:Inter,sans-serif;font-weight:600;font-size:0.85rem;color:{whale_info["color"]};">'
+        f'{whale_info["style"]}</span></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Two columns: Recent Trades & Open Positions
+    whale_col1, whale_col2 = st.columns(2)
+
+    with whale_col1:
+        st.markdown(
+            '<div style="font-family:Inter,sans-serif;font-weight:800;font-size:1rem;color:#00d4ff;'
+            'margin-bottom:12px;">RECENT TRADES</div>',
+            unsafe_allow_html=True,
+        )
+
+        activities = fetch_whale_activity(selected_addr, limit=25)
+        trades_only = [a for a in activities if a.get("type") == "TRADE"]
+
+        if not trades_only:
+            st.markdown(
+                '<div style="font-family:Inter,sans-serif;font-size:0.85rem;color:#64748b;padding:20px;'
+                'text-align:center;">No recent trades found</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            for t in trades_only[:15]:
+                title = (t.get("title") or "Unknown")[:55]
+                side = t.get("side", "?")
+                outcome = t.get("outcome", "?")
+                price = float(t.get("price", 0))
+                size = float(t.get("size", 0))
+                usdc = t.get("usdcSize")
+                usdc_str = f"${float(usdc):,.2f}" if usdc else f"${size * price:,.2f}"
+                ts = t.get("timestamp", 0)
+                if isinstance(ts, str):
+                    try:
+                        ts = int(ts)
+                    except ValueError:
+                        ts = 0
+                age = int(time.time() - ts) if ts else 0
+                if age < 60:
+                    age_str = f"{age}s ago"
+                elif age < 3600:
+                    age_str = f"{age // 60}m ago"
+                elif age < 86400:
+                    age_str = f"{age // 3600}h ago"
+                else:
+                    age_str = f"{age // 86400}d ago"
+
+                side_color = "#00ff88" if side == "BUY" else "#ff3366"
+                outcome_color = "#00d4ff" if "up" in outcome.lower() or "yes" in outcome.lower() else "#fbbf24"
+
+                st.markdown(
+                    f'<div style="background:#12121a;border:1px solid rgba(255,255,255,0.04);border-radius:8px;'
+                    f'padding:10px 14px;margin-bottom:6px;font-family:Inter,sans-serif;">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                    f'<span style="font-size:0.78rem;color:#e2e8f0;font-weight:600;">{title}</span>'
+                    f'<span style="font-size:0.65rem;color:#64748b;">{age_str}</span></div>'
+                    f'<div style="display:flex;gap:12px;margin-top:6px;font-size:0.72rem;">'
+                    f'<span style="color:{side_color};font-weight:700;">{side}</span>'
+                    f'<span style="color:{outcome_color};font-weight:600;">{outcome}</span>'
+                    f'<span style="color:#94a3b8;">@ {price:.3f}</span>'
+                    f'<span style="color:#e2e8f0;font-family:JetBrains Mono,monospace;font-weight:600;">'
+                    f'{usdc_str}</span>'
+                    f'<span style="color:#64748b;">{size:,.1f} shares</span>'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+    with whale_col2:
+        st.markdown(
+            '<div style="font-family:Inter,sans-serif;font-weight:800;font-size:1rem;color:#a855f7;'
+            'margin-bottom:12px;">OPEN POSITIONS</div>',
+            unsafe_allow_html=True,
+        )
+
+        positions = fetch_whale_positions(selected_addr, limit=20)
+
+        if not positions:
+            st.markdown(
+                '<div style="font-family:Inter,sans-serif;font-size:0.85rem;color:#64748b;padding:20px;'
+                'text-align:center;">No open positions found</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            # Sort by absolute current value descending
+            positions.sort(key=lambda p: abs(float(p.get("currentValue", 0))), reverse=True)
+            for p in positions[:15]:
+                title = (p.get("title") or "Unknown")[:55]
+                outcome = p.get("outcome", "?")
+                size = float(p.get("size", 0))
+                avg_price = float(p.get("avgPrice", 0))
+                cur_price = float(p.get("curPrice", 0))
+                initial_val = float(p.get("initialValue", 0))
+                current_val = float(p.get("currentValue", 0))
+                cash_pnl = float(p.get("cashPnl", 0))
+                realized_pnl = float(p.get("realizedPnl", 0))
+
+                total_pnl = cash_pnl + realized_pnl
+                pnl_color = "#00ff88" if total_pnl >= 0 else "#ff3366"
+                pnl_sign = "+" if total_pnl >= 0 else ""
+
+                st.markdown(
+                    f'<div style="background:#12121a;border:1px solid rgba(255,255,255,0.04);border-radius:8px;'
+                    f'padding:10px 14px;margin-bottom:6px;font-family:Inter,sans-serif;">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                    f'<span style="font-size:0.78rem;color:#e2e8f0;font-weight:600;">{title}</span>'
+                    f'<span style="font-size:0.72rem;color:{pnl_color};font-weight:700;'
+                    f'font-family:JetBrains Mono,monospace;">{pnl_sign}${total_pnl:,.2f}</span></div>'
+                    f'<div style="display:flex;gap:12px;margin-top:6px;font-size:0.72rem;">'
+                    f'<span style="color:#a855f7;font-weight:600;">{outcome}</span>'
+                    f'<span style="color:#94a3b8;">{size:,.1f} shares</span>'
+                    f'<span style="color:#64748b;">avg {avg_price:.3f}</span>'
+                    f'<span style="color:#e2e8f0;">now {cur_price:.3f}</span>'
+                    f'<span style="color:#64748b;">val ${current_val:,.2f}</span>'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+    # All Whales Overview grid
+    st.markdown(
+        '<div style="font-family:Inter,sans-serif;font-weight:900;font-size:1.1rem;'
+        'background:linear-gradient(135deg,#fbbf24,#ff3366);-webkit-background-clip:text;'
+        '-webkit-text-fill-color:transparent;background-clip:text;margin:24px 0 12px 0;">'
+        'ALL WHALES</div>',
+        unsafe_allow_html=True,
+    )
+
+    whale_cols = st.columns(3)
+    for idx, (addr, info) in enumerate(WHALE_REGISTRY.items()):
+        col = whale_cols[idx % 3]
+        with col:
+            is_selected = "border:2px solid " + info["color"] if addr == selected_addr else "border:1px solid rgba(255,255,255,0.06)"
+            pnl_color = "#00ff88" if not info["pnl"].startswith("-") else "#ff3366"
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#12121a,#1a1a2e);{is_selected};'
+                f'border-radius:12px;padding:14px 16px;margin-bottom:8px;cursor:pointer;">'
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+                f'<div style="width:28px;height:28px;border-radius:50%;background:{info["color"]};display:flex;'
+                f'align-items:center;justify-content:center;font-weight:900;font-size:0.75rem;color:#0a0a0f;">'
+                f'{info["name"][0].upper()}</div>'
+                f'<span style="font-family:Inter,sans-serif;font-weight:700;font-size:0.85rem;color:#e2e8f0;">'
+                f'{info["name"]}</span></div>'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.72rem;">'
+                f'<span style="color:{pnl_color};font-family:JetBrains Mono,monospace;font-weight:700;">'
+                f'{info["pnl"]}</span>'
+                f'<span style="color:#64748b;">{info["volume"]}</span></div>'
+                f'<div style="font-size:0.65rem;color:{info["color"]};margin-top:4px;">'
+                f'{info["style"]}</div></div>',
+                unsafe_allow_html=True,
+            )
 
 
 # =============================================
