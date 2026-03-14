@@ -1211,19 +1211,24 @@ class WhaleMirrorStrategy(Strategy):
         "0xad142563a8d80e3f6a18ca5fa5936027942bbf69": "myfirstpubes",
     }
 
+    SCALE_FACTOR = 0.10    # Mirror at 10% of whale size ($19.80 whale → $1.98 us)
+    MIN_BET = 5.0          # Polymarket 5-share minimum
+    MAX_BET = 20.0         # Cap per trade
+
     def __init__(self):
         super().__init__("whale", "WhaleMirror", "crypto")
-        self.bet_size = 5.0
-        self.max_positions = 1  # 1 at a time like other crypto strategies
+        self.bet_size = 5.0  # Fallback, actual size is scaled from whale
+        self.max_positions = 1
         self._last_scan = 0
-        self._scan_interval = 30  # Poll whales every 30 seconds
-        self._last_seen_trades = {}  # {whale_addr: set of tx hashes}
-        self._current_window_side = None  # The side whales are voting for
-        self._whale_votes = {}  # {whale_name: side} for current window
+        self._scan_interval = 30
+        self._last_seen_trades = {}
+        self._current_window_side = None
+        self._whale_votes = {}    # {whale_name: side}
+        self._whale_sizes = {}    # {whale_name: usdc_amount} — tracks how much each whale bet
         self._current_slug = None
 
     def on_crypto_tick(self, crypto_price, market, price_history, time_remaining):
-        if self.balance < self.bet_size or self.ko:
+        if self.balance < self.MIN_BET or self.ko:
             return
 
         slug = market.get("slug", "")
@@ -1232,6 +1237,7 @@ class WhaleMirrorStrategy(Strategy):
         if slug != self._current_slug:
             self._current_slug = slug
             self._whale_votes = {}
+            self._whale_sizes = {}
             self._current_window_side = None
 
         # Don't enter in last 15 seconds (too late for fills)
@@ -1275,16 +1281,22 @@ class WhaleMirrorStrategy(Strategy):
             return
         self._current_window_side = consensus_side
 
+        # Scale bet size: 10% of average whale USDC on this side
+        whale_usdc = [self._whale_sizes.get(n, 0) for n, s in self._whale_votes.items() if s == consensus_side]
+        avg_whale_usdc = sum(whale_usdc) / len(whale_usdc) if whale_usdc else 50.0
+        scaled_bet = avg_whale_usdc * self.SCALE_FACTOR
+        scaled_bet = max(self.MIN_BET, min(self.MAX_BET, scaled_bet))
+
         price = market.get(f"{consensus_side.lower()}_price", 0.50)
         voters = [name for name, side in self._whale_votes.items() if side == consensus_side]
-        self.log(f"Whale consensus: {consensus_side} ({', '.join(voters)})")
+        self.log(f"Whale consensus: {consensus_side} ({', '.join(voters)}) avg=${avg_whale_usdc:.2f} -> bet=${scaled_bet:.2f}")
 
         self.enter(
-            consensus_side, price, self.bet_size,
+            consensus_side, price, scaled_bet,
             market.get("market_id", slug), market.get("title", slug),
             slug=slug,
             window_end=market.get("end_time", 0),
-            extra={"whale_votes": f"{up_votes}U/{down_votes}D", "edge": 0},
+            extra={"whale_votes": f"{up_votes}U/{down_votes}D", "whale_avg": f"${avg_whale_usdc:.0f}", "edge": 0},
             market=market,
         )
 
@@ -1348,10 +1360,13 @@ class WhaleMirrorStrategy(Strategy):
                     if age > 300:  # Older than 5 min, skip
                         continue
 
-                    # Record whale's vote
-                    size = float(trade.get("usdcSize") or trade.get("size", 0))
+                    # Record whale's vote and USDC size
+                    usdc = float(trade.get("usdcSize") or 0)
+                    if usdc <= 0:
+                        usdc = float(trade.get("size", 0)) * float(trade.get("price", 0.50))
                     self._whale_votes[name] = side
-                    self.log(f"Whale {name}: {side} ${size:.2f}")
+                    self._whale_sizes[name] = self._whale_sizes.get(name, 0) + usdc
+                    self.log(f"Whale {name}: {side} ${usdc:.2f}")
 
                 # Trim seen set to prevent memory growth
                 if len(self._last_seen_trades[addr]) > 200:
