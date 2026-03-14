@@ -1207,6 +1207,8 @@ class WhaleMirrorStrategy(Strategy):
         "0x1cc16713196d456f86fa9c7387dd326a7f73b8df": "Wickier",
         "0x7744bfd749a70020d16a1fcbac1d064761c9999e": "chungguskhan",
         "0xde7be6d489bce070a959e0cb813128ae659b5f4b": "wan123",
+        "0x4d49acb0ae1c463eb5b1947d174141b812ba7450": "no1yet",
+        "0xad142563a8d80e3f6a18ca5fa5936027942bbf69": "myfirstpubes",
     }
 
     def __init__(self):

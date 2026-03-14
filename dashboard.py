@@ -1516,6 +1516,14 @@ WHALE_REGISTRY = {
         "name": "wan123", "pnl": "+$360K", "volume": "$10.4M",
         "style": "Diversified Whale", "color": "#00bcd4",
     },
+    "0x4d49acb0ae1c463eb5b1947d174141b812ba7450": {
+        "name": "no1yet", "pnl": "+$34K", "volume": "N/A",
+        "style": "Commodities/Macro", "color": "#8d6e63",
+    },
+    "0xad142563a8d80e3f6a18ca5fa5936027942bbf69": {
+        "name": "myfirstpubes", "pnl": "+$56K", "volume": "N/A",
+        "style": "Geopolitical", "color": "#ef5350",
+    },
 }
 
 WHALE_DATA_API = "https://data-api.polymarket.com"
