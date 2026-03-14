@@ -51,6 +51,7 @@ from config import (
     CATEGORY_SCORES, CATEGORY_KEYWORDS,
 )
 from math_utils import kelly_fraction as calc_kelly, position_size as calc_position_size
+from whale_watcher import WhaleWatcher
 
 # =====================
 # CONSTANTS
@@ -1183,89 +1184,78 @@ class RandomBaselineStrategy(Strategy):
 
 
 class WhaleMirrorStrategy(Strategy):
-    """Strategy 10: Copy-trade 4 profitable Polymarket whales.
+    """Strategy 10: Copy-trade 11 profitable Polymarket whales in real-time.
 
-    Tracks whale wallets via Polymarket Data API, mirrors their 5-min
-    crypto market trades (BTC/ETH Up/Down) in real-time.
-
-    Whales:
-        MuseumOfBees  — $171K P&L, crypto scalper ($31.7M vol)
-        tugao9        — $18.9K P&L, crypto scalper ($937K vol)
-        Realistic-Swivel — $125K P&L, micro-scalper ($31M vol)
-        2B9S          — $100K P&L, diversified ($12M vol)
+    Uses WhaleWatcher (Polygon WebSocket + Data API) for ~2-5 second trade detection.
+    Enters when 2+ whales agree on the same side. Bet size scales to 10% of whale average.
     """
 
-    DATA_API = "https://data-api.polymarket.com"
-
-    WHALES = {
-        "0x61276aba49117fd9299707d5d573652949d5c977": "MuseumOfBees",
-        "0x970e744a34cd0795ff7b4ba844018f17b7fd5c26": "tugao9",
-        "0x2eb5714ff6f20f5f9f7662c556dbef5e1c9bf4d4": "Realistic-Swivel",
-        "0x87650b9f63563f7c456d9bbcceee5f9faf06ed81": "2B9S",
-        "0xb2a3623364c33561d8312e1edb79eb941c798510": "aekghas",
-        "0x96489abcb9f583d6835c8ef95ffc923d05a86825": "anoin123",
-        "0x1cc16713196d456f86fa9c7387dd326a7f73b8df": "Wickier",
-        "0x7744bfd749a70020d16a1fcbac1d064761c9999e": "chungguskhan",
-        "0xde7be6d489bce070a959e0cb813128ae659b5f4b": "wan123",
-        "0x4d49acb0ae1c463eb5b1947d174141b812ba7450": "no1yet",
-        "0xad142563a8d80e3f6a18ca5fa5936027942bbf69": "myfirstpubes",
-    }
-
-    SCALE_FACTOR = 0.10    # Mirror at 10% of whale size ($19.80 whale → $1.98 us)
+    SCALE_FACTOR = 0.10    # Mirror at 10% of whale size
     MIN_BET = 5.0          # Polymarket 5-share minimum
     MAX_BET = 20.0         # Cap per trade
 
-    def __init__(self):
+    def __init__(self, whale_watcher=None):
         super().__init__("whale", "WhaleMirror", "crypto")
-        self.bet_size = 5.0  # Fallback, actual size is scaled from whale
+        self.bet_size = 5.0
         self.max_positions = 1
-        self._last_scan = 0
-        self._scan_interval = 30
-        self._last_seen_trades = {}
+        self._watcher = whale_watcher
         self._current_window_side = None
-        self._whale_votes = {}    # {whale_name: side}
-        self._whale_sizes = {}    # {whale_name: usdc_amount} — tracks how much each whale bet
         self._current_slug = None
 
+    def set_watcher(self, watcher):
+        """Set the WhaleWatcher reference (called by ArenaRunner)."""
+        self._watcher = watcher
+
     def on_crypto_tick(self, crypto_price, market, price_history, time_remaining):
-        if self.balance < self.MIN_BET or self.ko:
+        if self.balance < self.MIN_BET:
             return
 
         slug = market.get("slug", "")
 
-        # New window — reset whale votes
+        # New window — reset
         if slug != self._current_slug:
             self._current_slug = slug
-            self._whale_votes = {}
-            self._whale_sizes = {}
             self._current_window_side = None
 
-        # Don't enter in last 15 seconds (too late for fills)
-        if time_remaining < 15:
+        # Don't enter in last 15 seconds or first 30 seconds
+        if time_remaining < 15 or time_remaining > 270:
             return
-
-        # Don't enter in first 30 seconds (let whales show their hand)
-        if time_remaining > 270:
-            return
-
-        # Poll whale trades periodically
-        now = time.time()
-        if now - self._last_scan >= self._scan_interval:
-            self._last_scan = now
-            self._poll_whale_trades(slug)
 
         # If we already have a position, check exits
         if self.position:
             self._check_exit(market)
             return
 
-        # Need at least 2 whale votes on the same side to enter
-        if not self._whale_votes:
+        if not self._watcher:
             return
 
-        # Count votes
-        up_votes = sum(1 for s in self._whale_votes.values() if s == "UP")
-        down_votes = sum(1 for s in self._whale_votes.values() if s == "DOWN")
+        # Get whale trades from watcher (real-time, last 5 minutes)
+        whale_trades = self._watcher.get_recent_trades(max_age=300)
+
+        # Filter to crypto up/down trades only
+        crypto_trades = [t for t in whale_trades if t.get("is_crypto_updown")]
+
+        if not crypto_trades:
+            return
+
+        # Count votes per whale (most recent trade per whale wins)
+        whale_votes = {}   # {whale_name: side}
+        whale_sizes = {}   # {whale_name: usdc_total}
+
+        for t in crypto_trades:
+            name = t.get("whale_name", "")
+            side = t.get("crypto_side", "")
+            usdc = t.get("usdc_amount", 0)
+
+            if not side or not name:
+                continue
+
+            whale_votes[name] = side
+            whale_sizes[name] = whale_sizes.get(name, 0) + usdc
+
+        # Count consensus
+        up_votes = sum(1 for s in whale_votes.values() if s == "UP")
+        down_votes = sum(1 for s in whale_votes.values() if s == "DOWN")
 
         consensus_side = None
         if up_votes >= 2:
@@ -1276,114 +1266,35 @@ class WhaleMirrorStrategy(Strategy):
         if not consensus_side:
             return
 
-        # Don't re-enter the same side we already voted on
+        # Don't re-enter same side in this window
         if consensus_side == self._current_window_side:
             return
         self._current_window_side = consensus_side
 
-        # Scale bet size: 10% of average whale USDC on this side
-        whale_usdc = [self._whale_sizes.get(n, 0) for n, s in self._whale_votes.items() if s == consensus_side]
-        avg_whale_usdc = sum(whale_usdc) / len(whale_usdc) if whale_usdc else 50.0
-        scaled_bet = avg_whale_usdc * self.SCALE_FACTOR
-        scaled_bet = max(self.MIN_BET, min(self.MAX_BET, scaled_bet))
+        # Scale bet from whale sizes
+        sizes = [whale_sizes.get(n, 0) for n, s in whale_votes.items() if s == consensus_side]
+        avg_usdc = sum(sizes) / len(sizes) if sizes else 50.0
+        scaled_bet = max(self.MIN_BET, min(self.MAX_BET, avg_usdc * self.SCALE_FACTOR))
 
         price = market.get(f"{consensus_side.lower()}_price", 0.50)
-        voters = [name for name, side in self._whale_votes.items() if side == consensus_side]
-        self.log(f"Whale consensus: {consensus_side} ({', '.join(voters)}) avg=${avg_whale_usdc:.2f} -> bet=${scaled_bet:.2f}")
+        voters = [n for n, s in whale_votes.items() if s == consensus_side]
+        self.log(f"Whale consensus: {consensus_side} ({', '.join(voters)}) avg=${avg_usdc:.0f} -> ${scaled_bet:.2f}")
 
         self.enter(
             consensus_side, price, scaled_bet,
             market.get("market_id", slug), market.get("title", slug),
             slug=slug,
             window_end=market.get("end_time", 0),
-            extra={"whale_votes": f"{up_votes}U/{down_votes}D", "whale_avg": f"${avg_whale_usdc:.0f}", "edge": 0},
+            extra={"whale_votes": f"{up_votes}U/{down_votes}D", "whale_avg": f"${avg_usdc:.0f}", "edge": 0},
             market=market,
         )
 
-    def _poll_whale_trades(self, current_slug):
-        """Fetch recent trades from all 4 whales, look for current-window entries."""
-        for addr, name in self.WHALES.items():
-            try:
-                resp = requests.get(
-                    f"{self.DATA_API}/activity",
-                    params={"user": addr, "limit": 10},
-                    timeout=5,
-                )
-                if resp.status_code != 200:
-                    continue
-
-                activities = resp.json()
-                if not isinstance(activities, list):
-                    continue
-
-                # Initialize seen set for this whale
-                if addr not in self._last_seen_trades:
-                    self._last_seen_trades[addr] = set()
-
-                for trade in activities:
-                    if trade.get("type") != "TRADE":
-                        continue
-                    if trade.get("side") != "BUY":
-                        continue
-
-                    tx_hash = trade.get("transactionHash", "")
-                    if tx_hash in self._last_seen_trades[addr]:
-                        continue
-                    self._last_seen_trades[addr].add(tx_hash)
-
-                    # Check if this trade is on a crypto up/down market
-                    title = (trade.get("title") or "").lower()
-                    outcome = (trade.get("outcome") or "").lower()
-
-                    is_crypto_updown = ("up or down" in title and
-                                        any(c in title for c in ["bitcoin", "ethereum", "btc", "eth", "solana", "xrp"]))
-
-                    if not is_crypto_updown:
-                        continue
-
-                    # Determine side from outcome
-                    if "up" in outcome:
-                        side = "UP"
-                    elif "down" in outcome:
-                        side = "DOWN"
-                    else:
-                        continue
-
-                    # Check if trade is recent (within last 5 minutes)
-                    trade_ts = trade.get("timestamp", 0)
-                    if isinstance(trade_ts, str):
-                        try:
-                            trade_ts = int(trade_ts)
-                        except ValueError:
-                            continue
-                    age = time.time() - trade_ts
-                    if age > 300:  # Older than 5 min, skip
-                        continue
-
-                    # Record whale's vote and USDC size
-                    usdc = float(trade.get("usdcSize") or 0)
-                    if usdc <= 0:
-                        usdc = float(trade.get("size", 0)) * float(trade.get("price", 0.50))
-                    self._whale_votes[name] = side
-                    self._whale_sizes[name] = self._whale_sizes.get(name, 0) + usdc
-                    self.log(f"Whale {name}: {side} ${usdc:.2f}")
-
-                # Trim seen set to prevent memory growth
-                if len(self._last_seen_trades[addr]) > 200:
-                    self._last_seen_trades[addr] = set(list(self._last_seen_trades[addr])[-100:])
-
-            except Exception:
-                continue
-
     def _check_exit(self, market):
-        """Standard profit target / stop loss exits."""
         pos = self.position
         if not pos:
             return
-
         current_price = market.get(f"{pos.side.lower()}_bid", market.get(f"{pos.side.lower()}_price", 0.50))
         pnl_pct = pos.pnl_pct(current_price)
-
         if pnl_pct >= SCALP_PROFIT_TARGET:
             sell_value = pos.shares * current_price
             pnl = sell_value - pos.cost
@@ -1395,7 +1306,6 @@ class WhaleMirrorStrategy(Strategy):
             self.exit_trade(current_price, "stop_loss", pnl, pos.side, False)
 
     def on_market_resolve(self, winner):
-        """Resolution from BTC price comparison (same as other crypto strategies)."""
         if not self.position:
             return
         pos = self.position
@@ -1420,6 +1330,7 @@ class ArenaRunner:
 
     def __init__(self, coin="btc"):
         self.coin = coin.lower()
+        self.whale_watcher = WhaleWatcher()
         self.strategies: List[Strategy] = [
             CurrentStrategy(),
             KellyStrategy(),
@@ -1430,7 +1341,7 @@ class ArenaRunner:
             HighProbStrategy(),
             LongshotSniperStrategy(),
             RandomBaselineStrategy(),
-            WhaleMirrorStrategy(),
+            WhaleMirrorStrategy(whale_watcher=self.whale_watcher),
         ]
         self._crypto_prices = []
         self._last_crypto = None
@@ -1540,6 +1451,10 @@ class ArenaRunner:
         self.log(f"Coin: {self.coin.upper()} | Duration: {duration_minutes} min")
         self.log(f"Strategies: {', '.join(s.display_name for s in self.strategies)}")
         self.log(f"Each strategy starts with ${STARTING_BALANCE:.0f}")
+
+        # Start whale watcher (WebSocket + Data API threads)
+        self.whale_watcher.start()
+        self.log("WhaleWatcher started (WebSocket + Data API)")
 
         # Seed price history
         history = get_crypto_prices_bulk(self.coin, minutes=2)
@@ -1660,6 +1575,10 @@ class ArenaRunner:
             for strat in self.strategies:
                 if strat.category == "crypto" and strat.position:
                     strat.on_market_resolve(winner)
+
+        # Stop whale watcher threads
+        self.whale_watcher.stop()
+        self.log("WhaleWatcher stopped")
 
         self._write_state("finished")
         self.log("ARENA FINISHED")

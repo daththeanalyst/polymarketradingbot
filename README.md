@@ -1,6 +1,6 @@
 # POLYBOT — Multi-Strategy Polymarket Paper Trading Arena
 
-A quantitative paper trading bot for [Polymarket](https://polymarket.com) that runs **9 strategies in parallel**, each starting with a virtual $100 bankroll. Features a dark neon Streamlit dashboard with real-time leaderboard, equity curves, and trade logs.
+A quantitative paper trading bot for [Polymarket](https://polymarket.com) that runs **10 strategies in parallel**, each starting with a virtual $100 bankroll. Features a dark neon Streamlit dashboard with real-time leaderboard, equity curves, trade logs, and a **real-time whale tracker** that mirrors profitable traders via Polygon WebSocket.
 
 Built for strategy research and edge discovery — not financial advice.
 
@@ -12,7 +12,7 @@ Built for strategy research and edge discovery — not financial advice.
 
 ## What It Does
 
-The bot connects to Polymarket's CLOB (Central Limit Order Book) API and runs 9 independent trading strategies on 5-minute BTC Up/Down binary markets. Each strategy gets $100 in virtual money, makes real decisions based on live market data, and logs every trade for analysis.
+The bot connects to Polymarket's CLOB (Central Limit Order Book) API and runs 10 independent trading strategies on 5-minute BTC Up/Down binary markets. Each strategy gets $100 in virtual money, makes real decisions based on live market data, and logs every trade for analysis.
 
 **Realistic simulation features:**
 - Real order book data from Polymarket CLOB API (bid/ask/depth)
@@ -44,6 +44,34 @@ The bot connects to Polymarket's CLOB (Central Limit Order Book) API and runs 9 
 | 8 | **Longshot** | Buys the underdog below 40c. Low win rate, large payoffs on wins |
 | 9 | **Random** | Coin flip baseline (control group). Every strategy should beat this |
 
+### Whale Copy-Trading
+
+| # | Strategy | Description |
+|---|----------|-------------|
+| 10 | **WhaleMirror** | Real-time whale copy-trading. Monitors 11 profitable wallets via Polygon WebSocket (~2-3s latency) + Data API fallback. Enters when 2+ whales agree on direction. Bet sizing scaled to 10% of whale's USDC amount |
+
+---
+
+## Tracked Whales
+
+The WhaleMirror strategy monitors **11 profitable Polymarket wallets** in real-time using on-chain event detection:
+
+| Whale | Profile | Style | All-Time P&L |
+|-------|---------|-------|--------------|
+| **MuseumOfBees** | [View Profile](https://polymarket.com/profile/0x61276aba49117fd9299707d5d573652949d5c977) | Crypto scalper | Profitable |
+| **tugao9** | [View Profile](https://polymarket.com/profile/0x970e744a34cd0795ff7b4ba844018f17b7fd5c26) | Crypto scalper | Extremely profitable |
+| **Realistic-Swivel** | [View Profile](https://polymarket.com/profile/0x2eb5714ff6f20f5f9f7662c556dbef5e1c9bf4d4) | Crypto scalper | Extremely profitable |
+| **2B9S** | [View Profile](https://polymarket.com/profile/0x87650b9f63563f7c456d9bbcceee5f9faf06ed81) | Weather + Solana + ETH | Profitable |
+| **aekghas** | [View Profile](https://polymarket.com/profile/0xb2a3623364c33561d8312e1edb79eb941c798510) | War / Geopolitical | +$54K |
+| **anoin123** | [View Profile](https://polymarket.com/profile/0x96489abcb9f583d6835c8ef95ffc923d05a86825) | Everything (high volume) | -$4.87M |
+| **Wickier** | [View Profile](https://polymarket.com/profile/0x1cc16713196d456f86fa9c7387dd326a7f73b8df) | Mixed | +$220K |
+| **chungguskhan** | [View Profile](https://polymarket.com/profile/0x7744bfd749a70020d16a1fcbac1d064761c9999e) | Mixed | +$750K |
+| **wan123** | [View Profile](https://polymarket.com/profile/0xde7be6d489bce070a959e0cb813128ae659b5f4b) | Mixed | +$360K |
+| **no1yet** | [View Profile](https://polymarket.com/profile/0x4d49acb0ae1c463eb5b1947d174141b812ba7450) | Mixed | +$34K |
+| **myfirstpubes** | [View Profile](https://polymarket.com/profile/0xad142563a8d80e3f6a18ca5fa5936027942bbf69) | Mixed | +$56K |
+
+**Detection method:** Polygon WebSocket subscribes to `OrderFilled` events on the CTF Exchange contract (`0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E`), filtering for these 11 addresses as maker or taker. Trades are detected in ~2-3 seconds (one block confirmation). Data API polling runs every 5 seconds as fallback.
+
 ---
 
 ## Dashboard
@@ -64,7 +92,7 @@ Full-featured Streamlit dashboard with 5 tabs:
 
 ```
 polymarket-bot/
-├── arena.py              # Strategy Arena engine — 9 strategies, order book sim
+├── arena.py              # Strategy Arena engine — 10 strategies, order book sim
 ├── arena_runner.py       # Background process launcher for the arena
 ├── dashboard.py          # Streamlit dashboard (5 tabs, dark neon theme)
 ├── config.py             # All bot settings (bankroll, thresholds, API endpoints)
@@ -80,6 +108,7 @@ polymarket-bot/
 ├── short_term.py         # Short-term crypto market scanner
 ├── weather.py            # Weather forecast integration (NWS + Open-Meteo)
 ├── simulator.py          # Monte Carlo profit simulation
+├── whale_watcher.py      # Real-time whale monitor (Polygon WebSocket + Data API)
 ├── tracker.py            # Trade logging and CSV management
 ├── trader.py             # Polymarket CLOB order execution
 ├── requirements.txt      # Python dependencies

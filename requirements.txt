@@ -4,3 +4,5 @@ python-dotenv
 pandas
 streamlit
 plotly
+websockets
+pycryptodome
