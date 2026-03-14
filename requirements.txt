@@ -1,0 +1,6 @@
+py-clob-client
+requests
+python-dotenv
+pandas
+streamlit
+plotly
